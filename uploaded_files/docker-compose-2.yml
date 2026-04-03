@@ -1,0 +1,212 @@
+version: '3.9'
+
+# ============================================================
+# Equine Oracle — Full-Stack Local Development
+# Lowkey Consultants Ltd
+# Usage: docker-compose up --build -d
+# ============================================================
+
+networks:
+  oracle-net:
+    driver: bridge
+
+volumes:
+  postgres-data:
+  redis-data:
+  mlflow-data:
+  model-artifacts:
+  grafana-data:
+  prometheus-data:
+
+services:
+
+  # ─── BACKEND API ─────────────────────────────────────────
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: oracle-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql://oracle:oracle_dev@postgres:5432/oracle
+      - REDIS_URL=redis://redis:6379
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - RACING_API_KEY=${RACING_API_KEY}
+      - GROK4_API_KEY=${GROK4_API_KEY}
+      - MODEL_DIR=/app/models/registry/champion
+      - LOG_LEVEL=INFO
+      - ENVIRONMENT=development
+    volumes:
+      - ./backend:/app/backend
+      - ./models:/app/models:ro
+      - model-artifacts:/app/artifacts
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - oracle-net
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ─── FRONTEND DASHBOARD ──────────────────────────────────
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+      target: development
+    container_name: oracle-frontend
+    ports:
+      - "3000:3000"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_WS_URL=ws://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+    depends_on:
+      - backend
+    networks:
+      - oracle-net
+    restart: unless-stopped
+
+  # ─── ADMIN PANEL ─────────────────────────────────────────
+  admin:
+    build:
+      context: .
+      dockerfile: admin/Dockerfile
+      target: development
+    container_name: oracle-admin
+    ports:
+      - "3001:3001"
+    environment:
+      - VITE_API_URL=http://localhost:8000
+      - VITE_MLFLOW_URL=http://localhost:5000
+    volumes:
+      - ./admin/src:/app/src
+    depends_on:
+      - backend
+      - mlflow
+    networks:
+      - oracle-net
+    restart: unless-stopped
+
+  # ─── POSTGRES ────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    container_name: oracle-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=oracle
+      - POSTGRES_PASSWORD=oracle_dev
+      - POSTGRES_DB=oracle
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infra/scripts/init_db.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - oracle-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U oracle"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── REDIS ───────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: oracle-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    networks:
+      - oracle-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─── MLFLOW ──────────────────────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.8.0
+    container_name: oracle-mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://oracle:oracle_dev@postgres:5432/oracle
+      - MLFLOW_DEFAULT_ARTIFACT_ROOT=/mlflow/artifacts
+    volumes:
+      - mlflow-data:/mlflow/artifacts
+    command: >
+      mlflow server
+        --backend-store-uri postgresql://oracle:oracle_dev@postgres:5432/oracle
+        --default-artifact-root /mlflow/artifacts
+        --host 0.0.0.0
+        --port 5000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - oracle-net
+    restart: unless-stopped
+
+  # ─── PROMETHEUS ──────────────────────────────────────────
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    container_name: oracle-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./infra/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.enable-lifecycle'
+    networks:
+      - oracle-net
+    restart: unless-stopped
+
+  # ─── GRAFANA ─────────────────────────────────────────────
+  grafana:
+    image: grafana/grafana:10.1.0
+    container_name: oracle-grafana
+    ports:
+      - "3030:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_SECURITY_ADMIN_PASSWORD=oracle_admin
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./infra/grafana/dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./infra/grafana/datasources:/etc/grafana/provisioning/datasources:ro
+    depends_on:
+      - prometheus
+    networks:
+      - oracle-net
+    restart: unless-stopped
+
+  # ─── NGINX (local reverse proxy) ─────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: oracle-nginx
+    ports:
+      - "80:80"
+    volumes:
+      - ./infra/docker/nginx.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - backend
+      - frontend
+      - admin
+    networks:
+      - oracle-net
+    restart: unless-stopped

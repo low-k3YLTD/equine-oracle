@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#06140b" />
+    <meta name="description" content="Equine Oracle live swarm prediction cockpit" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="icon" href="/icon-192.svg" type="image/svg+xml" />
+    <title>Equine Oracle</title>
+    <script type="module" crossorigin src="/assets/index-B2KE-YEm.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-CkNBT5Zr.css">
+  </head>
+  <body>
+    <div id="root"></div>
+  </body>
+</html>
