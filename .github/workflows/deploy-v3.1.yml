@@ -1,0 +1,217 @@
+name: Deploy v3.1 Calibration & Conformal
+
+on:
+  push:
+    branches: [main, feature/v3.1-calibration]
+    paths:
+      - 'backend/ensemble/**'
+      - 'backend/api/routes/**'
+      - 'frontend/src/components/**'
+      - '.github/workflows/deploy-v3.1.yml'
+  pull_request:
+    branches: [main]
+
+env:
+  PYTHON_VERSION: '3.11'
+  NODE_VERSION: '18'
+  DOCKER_REGISTRY: ghcr.io
+  BACKEND_IMAGE: ghcr.io/lowkey-consultants/equine-oracle-backend
+  FRONTEND_IMAGE: ghcr.io/lowkey-consultants/equine-oracle-frontend
+
+jobs:
+  # ==========================================================================
+  # TEST BACKEND
+  # ==========================================================================
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      
+      - name: Cache pip dependencies
+        uses: actions/cache@v3
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('backend/requirements.txt') }}
+      
+      - name: Install dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+      
+      - name: Run tests with coverage
+        run: |
+          cd backend
+          pytest tests/ \
+            --cov=backend \
+            --cov-report=xml \
+            --cov-report=html \
+            --cov-fail-under=95 \
+            -v
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./backend/coverage.xml
+          fail_ci_if_error: true
+
+  # ==========================================================================
+  # TEST FRONTEND
+  # ==========================================================================
+  test-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: frontend/package-lock.json
+      
+      - name: Install dependencies
+        run: |
+          cd frontend
+          npm ci
+      
+      - name: Run tests
+        run: |
+          cd frontend
+          npm test -- --coverage --watchAll=false
+      
+      - name: Build
+        run: |
+          cd frontend
+          npm run build
+
+  # ==========================================================================
+  # BUILD & PUSH IMAGES
+  # ==========================================================================
+  build-images:
+    needs: [test-backend, test-frontend]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || github.ref == 'refs/heads/feature/v3.1-calibration'
+    steps:
+      - uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.DOCKER_REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Build and push backend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.BACKEND_IMAGE }}:v3.1
+            ${{ env.BACKEND_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      
+      - name: Build and push frontend
+        uses: docker/build-push-action@v5
+        with:
+          context: ./frontend
+          file: ./frontend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.FRONTEND_IMAGE }}:v3.1
+            ${{ env.FRONTEND_IMAGE }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  # ==========================================================================
+  # DEPLOY TO PRODUCTION
+  # ==========================================================================
+  deploy-production:
+    needs: build-images
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    environment: production
+    
+    steps:
+      - name: Deploy to production server
+        uses: appleboy/ssh-action@master
+        with:
+          host: ${{ secrets.DEPLOY_HOST }}
+          username: ${{ secrets.DEPLOY_USER }}
+          key: ${{ secrets.DEPLOY_KEY }}
+          script: |
+            cd ~/low-k3YLTD
+            
+            # Pull latest images
+            docker-compose -f docker-compose.prod.yml pull
+            
+            # Rolling update with health checks
+            docker-compose -f docker-compose.prod.yml up -d --no-deps backend
+            
+            # Wait for health check
+            echo "Waiting for backend health check..."
+            for i in {1..30}; do
+              if curl -sf http://localhost:8000/api/v2/health > /dev/null; then
+                echo "Backend healthy"
+                break
+              fi
+              sleep 2
+            done
+            
+            # Update frontend
+            docker-compose -f docker-compose.prod.yml up -d --no-deps frontend
+            
+            # Verify deployment
+            echo "Verifying v3.1 deployment..."
+            curl -s http://localhost:8000/api/v2/health | jq .
+            
+            # Check calibration endpoint
+            echo "Testing calibration endpoint..."
+            curl -s -X POST http://localhost:8000/api/v1/predict/exotic \
+              -H "Content-Type: application/json" \
+              -d '{"race_id": "TEST_DEPLOY", "bet_type": "trifecta", "jurisdiction": "NZ"}' | jq .
+            
+            echo "Deployment complete"
+
+  # ==========================================================================
+  # VERIFICATION
+  # ==========================================================================
+  verify-deployment:
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify v3.1 features
+        run: |
+          # Wait for services to stabilize
+          sleep 30
+          
+          # Test health endpoint
+          curl -sf https://equineoro-q9pbwx2d.manus.space/api/v2/health || exit 1
+          
+          # Test calibrated prediction
+          curl -sf -X POST https://equineoro-q9pbwx2d.manus.space/api/v1/predict/calibrated \
+            -H "Content-Type: application/json" \
+            -d '{"race_id": "VERIFY_001", "jurisdiction": "NZ"}' || exit 1
+          
+          # Test conformal endpoint
+          RESPONSE=$(curl -sf -X POST https://equineoro-q9pbwx2d.manus.space/api/v1/predict/exotic \
+            -H "Content-Type: application/json" \
+            -d '{"race_id": "VERIFY_001", "bet_type": "trifecta", "jurisdiction": "NZ"}')
+          
+          # Verify response structure
+          echo "$RESPONSE" | jq -e '.prediction_sets' || exit 1
+          echo "$RESPONSE" | jq -e '.uncertainty_coefficient' || exit 1
+          echo "$RESPONSE" | jq -e '.coverage_guarantee' || exit 1
+          
+          echo "✅ v3.1 verification complete"
