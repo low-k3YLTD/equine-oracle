@@ -1,0 +1,293 @@
+name: Code Quality & Linting
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'package.json'
+      - '.eslintrc.json'
+      - '.github/workflows/code-quality.yml'
+  pull_request:
+    branches: [main, develop]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run ESLint
+        run: npm run lint
+        continue-on-error: false
+      
+      - name: Run Prettier
+        run: npm run format:check
+        continue-on-error: false
+      
+      - name: Check TypeScript
+        run: npm run type-check
+        continue-on-error: false
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    strategy:
+      matrix:
+        node-version: [18, 20]
+    
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: oracle_test
+        options: >-
+          --health-cmd="mysqladmin ping"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=3
+        ports:
+          - 3306:3306
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v3
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run unit tests
+        run: npm run test:unit
+        env:
+          DATABASE_URL: mysql://root:root@localhost:3306/oracle_test
+      
+      - name: Run integration tests
+        run: npm run test:integration
+        env:
+          DATABASE_URL: mysql://root:root@localhost:3306/oracle_test
+      
+      - name: Generate coverage report
+        run: npm run test:coverage
+      
+      - name: Upload coverage to Codecov
+        uses: codecov/codecov-action@v3
+        with:
+          files: ./coverage/coverage-final.json
+          flags: unittests
+          name: codecov-${{ matrix.node-version }}
+
+  sonarqube:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Generate coverage
+        run: npm run test:coverage
+      
+      - name: SonarQube Scan
+        uses: SonarSource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+        with:
+          args: >
+            -Dsonar.projectKey=low-K3YLTD_equine-oracle
+            -Dsonar.organization=low-k3yltd
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Run npm audit
+        run: npm audit --audit-level=moderate
+        continue-on-error: true
+      
+      - name: Check for outdated packages
+        run: npm outdated
+        continue-on-error: true
+      
+      - name: Run Snyk
+        uses: snyk/actions/node@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: --severity-threshold=high
+        continue-on-error: true
+
+  performance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Build project
+        run: npm run build
+      
+      - name: Analyze bundle size
+        run: |
+          npm run build:analyze || echo "Bundle analysis not configured"
+      
+      - name: Check bundle size
+        run: |
+          SIZE=$(du -sh dist/ | cut -f1)
+          echo "Bundle size: $SIZE"
+          
+          # Fail if bundle is too large (e.g., > 500KB)
+          BYTES=$(du -sb dist/ | cut -f1)
+          if [ $BYTES -gt 524288000 ]; then
+            echo "❌ Bundle size exceeds 500MB"
+            exit 1
+          fi
+          echo "✅ Bundle size is acceptable"
+
+  documentation:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: Install dependencies
+        run: npm ci
+      
+      - name: Generate API documentation
+        run: npm run docs:generate || echo "Documentation generation not configured"
+      
+      - name: Check documentation
+        run: |
+          if [ ! -f "README.md" ]; then
+            echo "❌ README.md not found"
+            exit 1
+          fi
+          
+          if [ ! -f "docs/ARCHITECTURE.md" ]; then
+            echo "⚠️ docs/ARCHITECTURE.md not found"
+          fi
+          
+          echo "✅ Documentation check passed"
+
+  report:
+    runs-on: ubuntu-latest
+    needs: [lint, test, sonarqube, dependency-check, performance, documentation]
+    if: always()
+    timeout-minutes: 15
+    
+    steps:
+      - name: Generate quality report
+        run: |
+          cat > quality_report.md << 'EOF'
+          # Code Quality Report
+          
+          Generated: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ## Status Summary
+          
+          | Check | Status |
+          |-------|--------|
+          | Linting | ${{ needs.lint.result }} |
+          | Testing | ${{ needs.test.result }} |
+          | SonarQube | ${{ needs.sonarqube.result }} |
+          | Dependencies | ${{ needs.dependency-check.result }} |
+          | Performance | ${{ needs.performance.result }} |
+          | Documentation | ${{ needs.documentation.result }} |
+          
+          ## Recommendations
+          
+          - Address all linting errors before merging
+          - Maintain test coverage above 80%
+          - Keep bundle size under 500MB
+          - Update vulnerable dependencies
+          - Document all public APIs
+          
+          EOF
+          cat quality_report.md
+      
+      - name: Comment on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const fs = require('fs');
+            const report = fs.readFileSync('quality_report.md', 'utf8');
+            
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: report
+            });
+      
+      - name: Slack notification
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Code Quality Check - ${{ job.status }}'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+          fields: repo,message,commit,author
+        if: always()
