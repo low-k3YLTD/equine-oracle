@@ -30,7 +30,7 @@ jobs:
           fetch-depth: 0
       
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
           cache: 'pip'
@@ -65,7 +65,7 @@ jobs:
           fi
       
       - name: Upload validation report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: validation-results
           path: scripts/validation_results.txt
@@ -107,7 +107,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -145,7 +145,7 @@ jobs:
           cat validation_summary.md
       
       - name: Upload forward validation report
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: forward-validation-report
           path: validation_summary.md
@@ -174,7 +174,7 @@ jobs:
         uses: actions/checkout@v4
       
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
           cache: 'pip'
@@ -209,7 +209,7 @@ jobs:
           python performance_check.py
       
       - name: Upload performance metrics
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: performance-metrics
           path: performance_metrics.json
@@ -268,7 +268,7 @@ jobs:
           cat docs/INDEX.md
       
       - name: Upload documentation index
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: documentation-index
           path: docs/INDEX.md
