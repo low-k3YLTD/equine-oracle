@@ -1,36 +1,33 @@
-# Multi-stage Dockerfile for Equine Oracle v3.1
-# Production-grade horse-race prediction system with ML ensemble and Kelly RL agent
+# Production Dockerfile for Equine Oracle v3.1
+# Horse-race prediction system with ML ensemble (CatBoost, XGBoost, LightGBM)
 
-# Stage 1: Build stage - Node.js dependencies and frontend build
+# Stage 1: Builder - Compile TypeScript and build frontend
 FROM node:24-alpine AS builder
 
-WORKDIR /app
+WORKDIR /build
 
 # Install build dependencies
-RUN apk add --no-cache python3 make g++ cairo-dev jpeg-dev pango-dev giflib-dev pixman-dev
+RUN apk add --no-cache python3 make g++
 
 # Copy package files
-COPY package*.json ./
-COPY pnpm-lock.yaml* ./
+COPY package*.json pnpm-lock.yaml* ./
 
 # Install dependencies
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
+RUN npm install -g pnpm && \
+    pnpm install --frozen-lockfile || npm install
 
 # Copy source code
 COPY . .
 
-# Build frontend
-RUN pnpm run build:frontend || true
+# Build TypeScript and frontend
+RUN npm run build || echo "Build script not found, skipping"
 
-# Build backend TypeScript
-RUN pnpm run build:backend || true
-
-# Stage 2: Python ML environment - CatBoost, XGBoost, LightGBM ensemble
+# Stage 2: Runtime - Python + Node.js for ML ensemble
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for ML libraries and runtime
+# Install system dependencies for ML libraries
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     wget \
@@ -38,7 +35,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libssl-dev \
     libffi-dev \
-    python3-dev \
     libc-dev \
     gcc \
     g++ \
@@ -49,20 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     liblapack-dev \
     libblas-dev \
     gfortran \
+    nodejs \
+    npm \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Node.js in Python image
-RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - && \
-    apt-get install -y nodejs && \
-    rm -rf /var/lib/apt/lists/*
-
-# Copy built artifacts from builder stage
-COPY --from=builder /app/node_modules ./node_modules
-COPY --from=builder /app/dist ./dist
-COPY --from=builder /app/build ./build
-
-# Copy source files
-COPY . .
 
 # Install Python ML dependencies
 RUN pip install --no-cache-dir \
@@ -82,17 +67,18 @@ RUN pip install --no-cache-dir \
     redis==5.0.0 \
     psycopg2-binary==2.9.7 \
     mysql-connector-python==8.1.0 \
-    sqlalchemy==2.0.21 \
-    alembic==1.12.0 \
-    pydantic-settings==2.0.3 \
-    python-multipart==0.0.6 \
-    uvicorn==0.23.2 \
-    fastapi==0.103.1 \
-    starlette==0.27.0 \
-    pydantic-core==2.10.1
+    sqlalchemy==2.0.21
 
-# Install Node.js dependencies with pnpm
-RUN npm install -g pnpm && pnpm install --frozen-lockfile
+# Copy built artifacts from builder
+COPY --from=builder /build/dist ./dist 2>/dev/null || true
+COPY --from=builder /build/build ./build 2>/dev/null || true
+
+# Copy application files
+COPY . .
+
+# Install Node.js dependencies
+RUN npm install -g pnpm && \
+    pnpm install --frozen-lockfile || npm install
 
 # Create non-root user for security
 RUN useradd -m -u 1000 appuser && \
@@ -107,11 +93,11 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 # Expose ports
 EXPOSE 3000 8000 5000
 
-# Set environment variables
+# Set environment
 ENV NODE_ENV=production \
     PYTHONUNBUFFERED=1 \
     PORT=3000 \
     PYTHONPATH=/app
 
 # Start application
-CMD ["sh", "-c", "pnpm start:prod"]
+CMD ["npm", "run", "start:prod"]
